@@ -26,7 +26,7 @@ class NotificationHandler:
                 self.enabled_handlers.append(server.service_name)
             self.apb.add(config)
             self.queue = queue.Queue()
-            self.start_worker()
+            #self.start_worker()
             self.enabled = True
         else:
             self.enabled = False
@@ -35,16 +35,35 @@ class NotificationHandler:
 
     def send_notification(self, message, ss_name=[], **kwargs):
         if self.enabled:
-            self.queue.put((message, ss_name))
+            self.__send_message(message, ss_name)
+            #self.queue.put((message, ss_name))
+
+    def __send_message(self, message, ss_name):
+        apb = apprise.Apprise()
+        config = apprise.AppriseConfig()
+        config.add(APPRISE_CONFIG_PATH)
+        apb.add(config)
+        if ss_name:
+            apb.notify(body=message, attach=ss_name)
+        else:
+            apb.notify(body=message)
 
     def message_sender(self):
         while True:
             message, ss_name = self.queue.get()
+            log.info(f"Dequeuing message: {message}")
+            try:
+                self.__send_message(message="test start")
+            except:
+                log.info(f"Error when notifying")
 
             if ss_name:
+                log.info(f"Sending with ss_name")
                 self.apb.notify(body=message, attach=ss_name)
             else:
+                log.info(f"Sending with only message")
                 self.apb.notify(body=message)
+            log.info(f"Sent")
             self.queue.task_done()
 
     def start_worker(self):
