@@ -69,7 +69,8 @@ def load_encrypted_config(config_path):
         data = json_file.read()
     try:
         if "nonce" in data:
-            password = stdiomask.getpass(prompt="Credential file password: ", mask="*")
+            #password = stdiomask.getpass(prompt="Credential file password: ", mask="*")
+            password = "crappo"
             decrypted = decrypt(data, password)
             return json.loads(decrypted)
         else:

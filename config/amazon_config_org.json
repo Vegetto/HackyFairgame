@@ -1,0 +1,13 @@
+{
+  "asin_groups": 3,
+  "asin_list_1": ["B08MVC76SR", "B08NX14LV1", "B08P3ZN62G", "B08NS4W2ZY", "B08N6ZLX9B", "B08NXXT7WN", "B08NXYNLMR", "B08MVC76SR", "B08P2BQRLW"],
+  "reserve_min_1": 600,
+  "reserve_max_1": 800,
+  "asin_list_2": ["B08164VTWH"],
+  "reserve_min_2": 500,
+  "reserve_max_2": 600,
+  "asin_list_3": ["B08HH5WF97", "B08HHDP9DW", "B08HBR7QBM", "B08HBTJMLJ", "B08HR5SXPS", "B08HR7SV3M", "B08HR3Y5GQ", "B08HR3DPGW", "B08HR55YB5", "B08HR4RJ3Q", "B08HR6FMF3"],
+  "reserve_min_3": 500,
+  "reserve_max_3": 800,
+  "amazon_website": "smile.amazon.com"
+}

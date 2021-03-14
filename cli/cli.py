@@ -82,6 +82,9 @@ def main():
     "--delay", type=float, default=3.0, help="Time to wait between checks for item[s]"
 )
 @click.option(
+    "--focus-group", type=int, default=None, help="Focus on specific ASIN Group"
+)
+@click.option(
     "--checkshipping",
     is_flag=True,
     help="Factor shipping costs into reserve price and look for items with a shipping price",
@@ -121,6 +124,7 @@ def amazon(
     single_shot,
     no_screenshots,
     disable_presence,
+    focus_group,
 ):
     if no_image:
         selenium_utils.no_amazon_image()
@@ -137,6 +141,7 @@ def amazon(
         single_shot=single_shot,
         no_screenshots=no_screenshots,
         disable_presence=disable_presence,
+        focus_group=focus_group,
     )
     amzn_obj.run(delay=delay, test=test)
 

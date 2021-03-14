@@ -22,6 +22,9 @@ from utils.logger import log
 from utils.selenium_utils import options, enable_headless
 from utils.version import version
 
+import pathos.pools as pp
+import traceback
+
 AMAZON_URLS = {
     "BASE_URL": "https://{domain}/",
     "OFFER_URL": "https://{domain}/gp/offer-listing/",
@@ -174,12 +177,12 @@ class Amazon:
         single_shot=False,
         no_screenshots=False,
         disable_presence=False,
-        focus_group=None,
     ):
         self.notification_handler = notification_handler
         self.asin_list = []
         self.reserve_min = []
         self.reserve_max = []
+        self.drivers = []
         self.checkshipping = checkshipping
         self.button_xpaths = BUTTON_XPATHS
         self.random_delay = random_delay
@@ -226,16 +229,10 @@ class Amazon:
                     self.amazon_website = config.get(
                         "amazon_website", "smile.amazon.com"
                     )
-                    index = 0
                     for x in range(self.asin_groups):
-                        if focus_group is not None:
-                            if index != focus_group:
-                                index += 1
-                                continue
                         self.asin_list.append(config[f"asin_list_{x + 1}"])
                         self.reserve_min.append(float(config[f"reserve_min_{x + 1}"]))
                         self.reserve_max.append(float(config[f"reserve_max_{x + 1}"]))
-                        index += 1
                     # assert isinstance(self.asin_list, list)
                 except Exception as e:
                     log.error(f"{e} is missing")
@@ -256,16 +253,18 @@ class Amazon:
         # # keep profile bloat in check
         # if os.path.isdir(profile_amz):
         #     os.remove(profile_amz)
-        if focus_group is not None:
-            options.add_argument(f"user-data-dir=.profile-amz{focus_group}")
-        else:
-            options.add_argument(f"user-data-dir=.profile-amz")
+        options.add_argument(f"user-data-dir=.profile-amz")
 
         try:
-            self.driver = webdriver.Chrome(executable_path=binary_path, options=options)
-            self.wait = WebDriverWait(self.driver, 10)
+            for x in range(len(self.asin_list)):
+                subopt = options
+                subopt.add_argument(f"user-data-dir=.profile-amz{x}")
+                driver = webdriver.Chrome(executable_path=binary_path, options=subopt)
+                wait = WebDriverWait(driver, 10)
+                self.drivers.append(driver)
         except Exception as e:
             log.info("you probably have chrome open, you should close it")
+            traceback.print_exc()
             log.error(e)
             exit(1)
 
@@ -281,11 +280,21 @@ class Amazon:
             "password": password,
         }
 
-    def run(self, delay=1, test=False):
+    def run(self, delay=3, test=False):
         log.info("Waiting for home page.")
+        p = pp.ProcessPool(len(self.asin_list))
+        log.info(f"Drivers Length = {len(self.drivers)}, Asin list = {len(self.asin_list)}")
+        log.info(f"{[(delay, test, i) for i in range(len(self.drivers))]}")
+        output = p.map(self.__run__, [(delay, test, i) for i in range(len(self.drivers))])
+        #for x in xrange(self.asin_list):
+            #driver = self.driver[x]
+            #self.__run__(delay=delay, test=test, driver=driver)
+
+    def __run__(self, delay=3, test=False, i=None):
+        driver = self.drivers[i]
         while True:
             try:
-                self.driver.get(AMAZON_URLS["BASE_URL"])
+                driver.get(AMAZON_URLS["BASE_URL"])
                 break
             except Exception:
                 log.error(
@@ -295,11 +304,11 @@ class Amazon:
                 )
                 time.sleep(3)
                 pass
-        self.handle_startup()
-        if not self.is_logged_in():
-            self.login()
+        self.handle_startup(driver)
+        if not self.is_logged_in(driver):
+            self.login(driver)
         self.send_notification(
-            "Bot Logged in and Starting up", "Start-Up", self.take_screenshots
+            "Bot Logged in and Starting up", "Start-Up", driver, self.take_screenshots
         )
 
         keep_going = True
@@ -317,7 +326,7 @@ class Amazon:
             self.great_success = False
             while self.try_to_checkout:
                 try:
-                    self.navigate_pages(test)
+                    self.navigate_pages(test, driver)
                 # if for some reason page transitions in the middle of checking elements, don't break the program
                 except exceptions.StaleElementReferenceException:
                     pass
@@ -345,69 +354,74 @@ class Amazon:
         log.info(f"FairGame bot ran for {runtime} seconds.")
 
     @debug
-    def handle_startup(self):
-        time.sleep(self.page_wait_delay())
-        if self.is_logged_in():
+    def handle_startup(self, driver):
+        time.sleep(self.page_wait_delay(driver))
+        if self.is_logged_in(driver):
             log.info("Already logged in")
         else:
-            log.info("Lets log in.")
-
-            is_smile = "smile" in AMAZON_URLS["BASE_URL"]
-            xpath = (
-                '//*[@id="ge-hello"]/div/span/a'
-                if is_smile
-                else '//*[@id="nav-link-accountList"]/div/span'
-            )
-            try:
-                self.driver.find_element_by_xpath(xpath).click()
-            except exceptions.NoSuchElementException:
-                log.error("Log in button does not exist")
-            log.info("Wait for Sign In page")
-            time.sleep(self.page_wait_delay())
+            self.login_startup(driver)
 
     @debug
-    def is_logged_in(self):
+    def login_startup(self, driver):
+        log.info("Lets log in.")
+
+        is_smile = "smile" in AMAZON_URLS["BASE_URL"]
+        xpath = (
+            '//*[@id="ge-hello"]/div/span/a'
+            if is_smile
+            else '//*[@id="nav-link-accountList"]/div/span'
+        )
         try:
-            text = self.driver.find_element_by_id("nav-link-accountList").text
+            driver.find_element_by_xpath(xpath).click()
+        except exceptions.NoSuchElementException:
+            log.error("Log in button does not exist")
+        log.info("Wait for Sign In page")
+        time.sleep(self.page_wait_delay())
+
+
+    @debug
+    def is_logged_in(self, driver):
+        try:
+            text = driver.find_element_by_id("nav-link-accountList").text
             return not any(sign_in in text for sign_in in SIGN_IN_TEXT)
         except exceptions.NoSuchElementException:
             return False
 
     @debug
-    def login(self):
+    def login(self, driver):
 
         try:
             log.info("Email")
-            self.driver.find_element_by_xpath('//*[@id="ap_email"]').send_keys(
+            driver.find_element_by_xpath('//*[@id="ap_email"]').send_keys(
                 self.username + Keys.RETURN
             )
         except exceptions.NoSuchElementException:
             log.info("Email not needed.")
             pass
 
-        if self.driver.find_elements_by_xpath('//*[@id="auth-error-message-box"]'):
+        if driver.find_elements_by_xpath('//*[@id="auth-error-message-box"]'):
             log.error("Login failed, check your username in amazon_config.json")
             time.sleep(240)
             exit(1)
 
         log.info("Remember me checkbox")
         try:
-            self.driver.find_element_by_xpath('//*[@name="rememberMe"]').click()
+            driver.find_element_by_xpath('//*[@name="rememberMe"]').click()
         except exceptions.NoSuchElementException:
             log.error("Remember me checkbox did not exist")
 
         log.info("Password")
         try:
-            self.driver.find_element_by_xpath('//*[@id="ap_password"]').send_keys(
+            driver.find_element_by_xpath('//*[@id="ap_password"]').send_keys(
                 self.password + Keys.RETURN
             )
         except exceptions.NoSuchElementException:
             log.error("Password entry box did not exist")
 
         time.sleep(self.page_wait_delay())
-        if self.driver.title in TWOFA_TITLES:
+        if driver.title in TWOFA_TITLES:
             log.info("enter in your two-step verification code in browser")
-            while self.driver.title in TWOFA_TITLES:
+            while driver.title in TWOFA_TITLES:
                 time.sleep(DEFAULT_MAX_WEIRD_PAGE_DELAY)
         log.info(f"Logged in as {self.username}")
 
@@ -415,14 +429,22 @@ class Amazon:
     def run_asins(self, delay):
         found_asin = False
         while not found_asin:
-            for i in range(len(self.asin_list)):
-                for asin in self.asin_list[i]:
-                    if self.check_stock(asin, self.reserve_min[i], self.reserve_max[i]):
-                        return asin
-                    time.sleep(delay)
+            p = pp.ProcessPool(len(self.asin_list))
+            output = p.map(self.__run_asins, [(delay, i) for i in range(len(self.drivers))])
+            #for i in range(len(self.asin_list)):
+                #driver = self.drivers[i]
+                #self.__run_asins(delay, driver)
 
     @debug
-    def check_stock(self, asin, reserve_min, reserve_max, retry=0):
+    def __run_asins(self, delay, i):
+        driver = self.drivers[i]
+        for asin in self.asin_list[i]:
+            if self.check_stock(asin, self.reserve_min[i], self.reserve_max[i], driver):
+                return asin
+            time.sleep(delay)
+
+    @debug
+    def check_stock(self, asin, reserve_min, reserve_max, driver, retry=0):
         if retry > DEFAULT_MAX_ATC_TRIES:
             log.info("max add to cart retries hit, returning to asin check")
             return False
@@ -450,23 +472,24 @@ class Amazon:
         try:
             while True:
                 try:
-                    self.driver.get(f.url)
+                    driver.get(f.url)
                     break
                 except Exception:
                     log.error("Failed to get the URL, were in the exception now.")
                     time.sleep(3)
                     pass
-            elements = self.driver.find_elements_by_xpath(
+            elements = driver.find_elements_by_xpath(
                 '//*[@name="submit.addToCart"]'
             )
-            prices = self.driver.find_elements_by_xpath(
+            prices = driver.find_elements_by_xpath(
                 '//*[@class="a-size-large a-color-price olpOfferPrice a-text-bold"]'
             )
-            shipping = self.driver.find_elements_by_xpath(
+            shipping = driver.find_elements_by_xpath(
                 '//*[@class="a-color-secondary"]'
             )
         except Exception as e:
             log.error(e)
+            traceback.print_exc()
             return None
 
         in_stock = False
@@ -501,19 +524,20 @@ class Amazon:
 
                 elements[i].click()
                 time.sleep(self.page_wait_delay())
-                if self.driver.title in SHOPING_CART_TITLES:
+                if driver.title in SHOPING_CART_TITLES:
                     return True
                 else:
                     log.info("did not add to cart, trying again")
-                    log.debug(f"failed title was {self.driver.title}")
+                    log.debug(f"failed title was {driver.title}")
                     self.send_notification(
-                        "Failed Add to Cart", "failed-atc", self.take_screenshots
+                        "Failed Add to Cart", "failed-atc", driver, self.take_screenshot
                     )
-                    self.save_page_source("failed-atc")
+                    self.save_page_source("failed-atc", driver)
                     in_stock = self.check_stock(
                         asin=asin,
                         reserve_max=reserve_max,
                         reserve_min=reserve_min,
+                        driver=driver,
                         retry=retry + 1,
                     )
         return in_stock
@@ -526,49 +550,50 @@ class Amazon:
                 self.asin_list.pop(i)
                 self.reserve_max.pop(i)
                 self.reserve_min.pop(i)
+                self.drivers.pop(i)
                 break
 
     # checkout page navigator
     @debug
-    def navigate_pages(self, test):
+    def navigate_pages(self, test, driver):
         # delay to wait for page load
         time.sleep(self.page_wait_delay())
 
-        title = self.driver.title
+        title = driver.title
         if title in SIGN_IN_TITLES:
-            self.login()
+            self.login(driver)
         elif title in CAPTCHA_PAGE_TITLES:
-            self.handle_captcha()
+            self.handle_captcha(driver)
         elif title in SHOPING_CART_TITLES:
-            self.handle_cart()
+            self.handle_cart(driver)
         elif title in CHECKOUT_TITLES:
-            self.handle_checkout(test)
+            self.handle_checkout(test, driver)
         elif title in ORDER_COMPLETE_TITLES:
-            self.handle_order_complete()
+            self.handle_order_complete(driver)
         elif title in PRIME_TITLES:
-            self.handle_prime_signup()
+            self.handle_prime_signup(driver)
         elif title in HOME_PAGE_TITLES:
             # if home page, something went wrong
-            self.handle_home_page()
+            self.handle_home_page(driver)
         elif title in DOGGO_TITLES:
-            self.handle_doggos()
+            self.handle_doggos(driver)
         elif title in OUT_OF_STOCK:
-            self.handle_out_of_stock()
+            self.handle_out_of_stock(driver)
         else:
             log.error(
                 f"{title} is not a known title, please create issue indicating the title with a screenshot of page"
             )
             self.send_notification(
-                "Encountered Unknown Page Title", "unknown-title", self.take_screenshots
+                "Encountered Unknown Page Title", "unknown-title", driver, self.take_screenshots
             )
-            self.save_page_source("unknown-title")
+            self.save_page_source("unknown-title", driver)
 
     @debug
-    def handle_prime_signup(self):
+    def handle_prime_signup(self, driver):
         log.info("Prime offer page popped up, attempting to click No Thanks")
         button = None
         try:
-            button = self.driver.find_element_by_xpath(
+            button = driver.find_element_by_xpath(
                 # '//*[@class="a-button a-button-base no-thanks-button"]'
                 '//*[contains(@class, "no-thanks-button") or contains(@class, "prime-nothanks-button") or contains(@class, "prime-no-button")]'
             )
@@ -582,10 +607,11 @@ class Amazon:
             # except exceptions.NoSuchElementException:
             #     log.error("couldn't find PYO button")
             log.info("sign up for Prime and this won't happen anymore")
-            self.save_page_source("prime-signup-error")
+            self.save_page_source("prime-signup-error", driver)
             self.send_notification(
                 "Prime Sign-up Error occurred",
                 "prime-signup-error",
+                driver,
                 self.take_screenshots,
             )
         if button:
@@ -596,14 +622,14 @@ class Amazon:
                 "Prime offer page popped up, user intervention required"
             )
             time.sleep(DEFAULT_MAX_WEIRD_PAGE_DELAY)
-            self.driver.refresh()
+            driver.refresh()
 
     @debug
-    def handle_home_page(self):
+    def handle_home_page(self, driver):
         log.info("On home page, trying to get back to checkout")
         button = None
         try:
-            button = self.driver.find_element_by_xpath('//*[@id="nav-cart"]')
+            button = driver.find_element_by_xpath('//*[@id="nav-cart"]')
         except exceptions.NoSuchElementException:
             log.info("Could not find cart button")
         if button:
@@ -615,46 +641,47 @@ class Amazon:
             time.sleep(DEFAULT_MAX_WEIRD_PAGE_DELAY)
 
     @debug
-    def handle_cart(self):
+    def handle_cart(self, driver):
         self.start_time_atc = time.time()
         log.info("clicking checkout.")
         try:
-            self.save_screenshot("ptc-page")
+            self.save_screenshot("ptc-page", driver)
         except:
             pass
         try:
-            self.driver.find_element_by_xpath('//*[@id="hlb-ptc-btn-native"]').click()
+            driver.find_element_by_xpath('//*[@id="hlb-ptc-btn-native"]').click()
         except exceptions.NoSuchElementException:
             try:
-                self.driver.find_element_by_xpath('//*[@id="hlb-ptc-btn"]').click()
+                driver.find_element_by_xpath('//*[@id="hlb-ptc-btn"]').click()
             except exceptions.NoSuchElementException:
                 log.error("couldn't find buttons to proceed to checkout")
-                self.save_page_source("ptc-error")
+                self.save_page_source("ptc-error", driver)
                 self.send_notification(
                     "Proceed to Checkout Error Occurred",
                     "ptc-error",
+                    driver,
                     self.take_screenshots,
                 )
                 log.info("Refreshing page to try again")
-                self.driver.refresh()
+                driver.refresh()
                 self.checkout_retry += 1
 
     @debug
-    def handle_checkout(self, test):
-        previous_title = self.driver.title
+    def handle_checkout(self, test, driver):
+        previous_title = driver.title
         button = None
         i = 0
         for i in range(len(self.button_xpaths)):
             try:
                 if (
-                    self.driver.find_element_by_xpath(
+                    driver.find_element_by_xpath(
                         self.button_xpaths[0]
                     ).is_displayed()
-                    and self.driver.find_element_by_xpath(
+                    and driver.find_element_by_xpath(
                         self.button_xpaths[0]
                     ).is_enabled()
                 ):
-                    button = self.driver.find_element_by_xpath(self.button_xpaths[0])
+                    button = driver.find_element_by_xpath(self.button_xpaths[0])
             except exceptions.NoSuchElementException:
                 log.debug(f"{self.button_xpaths[0]}, lets try a different one.")
             if button:
@@ -663,12 +690,12 @@ class Amazon:
                     button.click()
                     j = 0
                     while (
-                        self.driver.title == previous_title
+                        driver.title == previous_title
                         and j < MAX_CHECKOUT_BUTTON_WAIT
                     ):
                         time.sleep(self.page_wait_delay())
                         j += 1
-                    if self.driver.title != previous_title:
+                    if driver.title != previous_title:
                         break
                     else:
                         log.info(
@@ -683,23 +710,24 @@ class Amazon:
                         self.asin_list = []
                     break
             self.button_xpaths.append(self.button_xpaths.pop(0))
-        if not test and self.driver.title == previous_title:
+        if not test and driver.title == previous_title:
             # Could not click button, refresh page and try again
             log.error("couldn't find buttons to proceed to checkout")
-            self.save_page_source("ptc-error")
+            self.save_page_source("ptc-error", driver)
             self.send_notification(
                 "Error in checkout.  Please check browser window.",
                 "ptc-error",
+                driver,
                 self.take_screenshots,
             )
             log.info("Refreshing page to try again")
-            self.driver.refresh()
+            driver.refresh()
             self.order_retry += 1
 
     @debug
-    def handle_order_complete(self):
+    def handle_order_complete(self, driver):
         log.info("Order Placed.")
-        self.send_notification("Order placed.", "order-placed", self.take_screenshots)
+        self.send_notification("Order placed.", "order-placed", driver, self.take_screenshots)
         self.great_success = True
         if self.single_shot:
             self.asin_list = []
@@ -707,57 +735,57 @@ class Amazon:
         log.info(f"checkout completed in {time.time() - self.start_time_atc} seconds")
 
     @debug
-    def handle_doggos(self):
+    def handle_doggos(self, driver):
         self.notification_handler.send_notification(
             "You got dogs, bot may not work correctly. Ending Checkout"
         )
         self.try_to_checkout = False
 
     @debug
-    def handle_out_of_stock(self):
+    def handle_out_of_stock(self, driver):
         self.notification_handler.send_notification(
             "Carted it, but went out of stock, better luck next time."
         )
         self.try_to_checkout = False
 
     @debug
-    def handle_captcha(self):
+    def handle_captcha(self, driver):
         # wait for captcha to load
         time.sleep(DEFAULT_MAX_WEIRD_PAGE_DELAY)
         try:
-            if self.driver.find_element_by_xpath(
+            if driver.find_element_by_xpath(
                 '//form[@action="/errors/validateCaptcha"]'
             ):
                 try:
                     log.info("Stuck on a captcha... Lets try to solve it.")
-                    captcha = AmazonCaptcha.fromdriver(self.driver)
+                    captcha = AmazonCaptcha.fromdriver(driver)
                     solution = captcha.solve()
                     log.info(f"The solution is: {solution}")
                     if solution == "Not solved":
                         log.info(
                             f"Failed to solve {captcha.image_link}, lets reload and get a new captcha."
                         )
-                        self.driver.refresh()
+                        driver.refresh()
                     else:
                         self.send_notification(
-                            "Solving catpcha", "captcha", self.take_screenshots
+                            "Solving catpcha", "captcha", driver, self.take_screenshots
                         )
-                        self.driver.find_element_by_xpath(
+                        driver.find_element_by_xpath(
                             '//*[@id="captchacharacters"]'
                         ).send_keys(solution + Keys.RETURN)
                 except Exception as e:
                     log.debug(e)
                     log.info("Error trying to solve captcha. Refresh and retry.")
-                    self.driver.refresh()
+                    driver.refresh()
         except exceptions.NoSuchElementException:
             log.error("captcha page does not contain captcha element")
             log.error("refreshing")
-            self.driver.refresh()
+            driver.refresh()
 
-    def save_screenshot(self, page):
+    def save_screenshot(self, page, driver):
         file_name = get_timestamp_filename("screenshots/screenshot-" + page, ".png")
         try:
-            self.driver.save_screenshot(file_name)
+            driver.save_screenshot(file_name)
             return file_name
         except exceptions.TimeoutException:
             log.info("Timed out taking screenshot, trying to continue anyway")
@@ -767,11 +795,11 @@ class Amazon:
             pass
         return None
 
-    def save_page_source(self, page):
+    def save_page_source(self, page, driver):
         """Saves DOM at the current state when called.  This includes state changes from DOM manipulation via JS"""
         file_name = get_timestamp_filename("html_saves/" + page + "_source", "html")
 
-        page_source = self.driver.page_source
+        page_source = driver.page_source
         with open(file_name, "w", encoding="utf-8") as f:
             f.write(page_source)
 
@@ -781,9 +809,9 @@ class Amazon:
         else:
             return DEFAULT_PAGE_WAIT_DELAY
 
-    def send_notification(self, message, page_name, take_screenshot=True):
+    def send_notification(self, message, page_name, driver, take_screenshot=True):
         if take_screenshot:
-            file_name = self.save_screenshot(page_name)
+            file_name = self.save_screenshot(page_name, driver)
             self.notification_handler.send_notification(message, file_name)
         else:
             self.notification_handler.send_notification(message)
