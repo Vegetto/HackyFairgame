@@ -1,4 +1,4 @@
-start_amazon.bash explains how it can be used.
+start_amazon.bash explains how it can be used. This runs one "focus group" at once. Running multiple instances will make them run and check in parallel.
 
 Here's the config used:
 {
